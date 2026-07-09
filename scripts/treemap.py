@@ -56,6 +56,63 @@ def load_config(root: Path) -> dict:
     return deep_merge(DEFAULTS, user)
 
 
+class MarkerError(Exception):
+    """Corrupted or duplicated marker block — refuse to write, exit 2."""
+
+
+def begin_line(name: str, kind: str) -> str:
+    if kind == "module":
+        return f"<!-- BEGIN {name} (auto) — do not edit inside this block -->"
+    return f"<!-- BEGIN {name} (auto) -->"
+
+
+def end_line(name: str) -> str:
+    return f"<!-- END {name} (auto) -->"
+
+
+def find_block(text: str, name: str) -> tuple[int, int] | None:
+    """Return (begin_idx, end_idx) line indices, None if absent.
+
+    Matches on the `<!-- BEGIN <name> ` / `<!-- END <name> ` prefixes so the
+    em-dash suffix is not load-bearing. Raises MarkerError on imbalance or
+    duplicate blocks.
+    """
+    begins, ends = [], []
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith(f"<!-- BEGIN {name} "):
+            begins.append(i)
+        elif stripped.startswith(f"<!-- END {name} "):
+            ends.append(i)
+    if not begins and not ends:
+        return None
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise MarkerError(f"corrupted or duplicated '{name}' marker block")
+    return begins[0], ends[0]
+
+
+def read_block_body(text: str, name: str) -> str | None:
+    span = find_block(text, name)
+    if span is None:
+        return None
+    lines = text.splitlines()
+    return "\n".join(lines[span[0] + 1:span[1]])
+
+
+def replace_block(text: str, name: str, kind: str, body: str) -> str:
+    block = [begin_line(name, kind), *body.strip("\n").splitlines(), end_line(name)]
+    lines = text.splitlines()
+    span = find_block(text, name)
+    if span is None:
+        if text.strip():
+            new = lines + [""] + block          # append after human text
+        else:
+            new = block                          # fresh file: block only
+    else:
+        new = lines[:span[0]] + block + lines[span[1] + 1:]
+    return "\n".join(new) + "\n"
+
+
 def cmd_scan(args, cfg: dict) -> int:
     return 0  # implemented in Task 7
 
