@@ -14,7 +14,8 @@ class TestConfig(unittest.TestCase):
         cfg = self.tm.load_config(self.repo.root)
         self.assertEqual(cfg["caps"], {"root": 80, "nested": 60, "hard_max": 200})
         self.assertTrue(cfg["stack_aware"])
-        self.assertEqual(cfg["markers"], {"module": "treecode", "root": "treecode:map"})
+        self.assertEqual(cfg["markers"],
+                         {"module": "treecode", "root": "treecode:map", "rule": "treecode:rule"})
 
     def test_partial_config_deep_merges(self):
         self.repo.write("treemap.config.json",

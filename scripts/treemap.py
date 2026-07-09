@@ -32,7 +32,7 @@ DEFAULTS = {
     },
     "ignore_globs": ["**/node_modules/**", "**/.venv/**", "**/dist/**",
                      "**/build/**", "**/__pycache__/**"],
-    "markers": {"module": "treecode", "root": "treecode:map"},
+    "markers": {"module": "treecode", "root": "treecode:map", "rule": "treecode:rule"},
     "edges": {},
     "generated_language": "en",
     "hooks": {"cap_guard": "warn", "instructions_loaded_log": False},
@@ -72,7 +72,7 @@ class MarkerError(Exception):
 
 
 def begin_line(name: str, kind: str) -> str:
-    if kind == "module":
+    if kind in ("module", "rule"):
         return f"<!-- BEGIN {name} (auto) — do not edit inside this block -->"
     return f"<!-- BEGIN {name} (auto) -->"
 
@@ -593,7 +593,21 @@ def cmd_check(args, cfg: dict) -> int:
 
 
 def _marker_name(cfg: dict, kind: str) -> str:
-    return cfg["markers"]["root"] if kind == "root-map" else cfg["markers"]["module"]
+    if kind == "root-map":
+        return cfg["markers"]["root"]
+    if kind == "rule":
+        return cfg["markers"]["rule"]
+    return cfg["markers"]["module"]
+
+
+def _slug(path: str) -> str:
+    return path.strip("/").replace("/", "-") or "root"
+
+
+def _target_file(root: Path, path: str, kind: str) -> Path:
+    if kind == "rule":
+        return root / ".claude" / "rules" / f"{_slug(path)}.md"
+    return root / path / "CLAUDE.md"
 
 
 def _cap_for(cfg: dict, target: Path, root: Path) -> int:
@@ -602,7 +616,7 @@ def _cap_for(cfg: dict, target: Path, root: Path) -> int:
 
 def cmd_write_block(args, cfg: dict) -> int:
     root: Path = args.root_path
-    target = (root / args.path / "CLAUDE.md").resolve()
+    target = _target_file(root, args.path, args.kind).resolve()
     if not target.is_relative_to(root):
         raise UsageError(f"--path escapes the repo root: {args.path}")
     if args.content_file:
@@ -619,16 +633,17 @@ def cmd_write_block(args, cfg: dict) -> int:
     if new != old:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new, encoding="utf-8")
-    lines = new.count("\n")
-    cap = _cap_for(cfg, target, root)
-    if lines > cap:
-        print(f"warning: {target} is {lines} lines (cap {cap})", file=sys.stderr)
+    if args.kind != "rule":                      # rules are behavioral, not capped
+        lines = new.count("\n")
+        cap = _cap_for(cfg, target, root)
+        if lines > cap:
+            print(f"warning: {target} is {lines} lines (cap {cap})", file=sys.stderr)
     return 0
 
 
 def cmd_read_block(args, cfg: dict) -> int:
     root: Path = args.root_path
-    target = root / args.path / "CLAUDE.md"
+    target = _target_file(root, args.path, args.kind)
     if not target.is_file():
         return 0
     try:
@@ -661,13 +676,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_write = sub.add_parser("write-block", help="idempotently write a marker block")
     p_write.add_argument("--path", required=True, help="module dir (or . for root map)")
-    p_write.add_argument("--kind", choices=["module", "root-map"], default="module")
+    p_write.add_argument("--kind", choices=["module", "root-map", "rule"], default="module")
     p_write.add_argument("--content-file", help="block body file (default: stdin)")
     p_write.set_defaults(func=cmd_write_block)
 
     p_read = sub.add_parser("read-block", help="print the current block body")
     p_read.add_argument("--path", default=".")
-    p_read.add_argument("--kind", choices=["module", "root-map"], default="module")
+    p_read.add_argument("--kind", choices=["module", "root-map", "rule"], default="module")
     p_read.set_defaults(func=cmd_read_block)
     return parser
 
