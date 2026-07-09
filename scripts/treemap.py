@@ -121,12 +121,54 @@ def cmd_check(args, cfg: dict) -> int:
     return 0  # implemented in Task 8
 
 
+def _marker_name(cfg: dict, kind: str) -> str:
+    return cfg["markers"]["root"] if kind == "root-map" else cfg["markers"]["module"]
+
+
+def _cap_for(cfg: dict, target: Path, root: Path) -> int:
+    return cfg["caps"]["root"] if target.parent == root else cfg["caps"]["nested"]
+
+
 def cmd_write_block(args, cfg: dict) -> int:
-    return 0  # implemented in Task 4
+    root: Path = args.root_path
+    target = (root / args.path / "CLAUDE.md").resolve()
+    if not target.is_relative_to(root):
+        raise UsageError(f"--path escapes the repo root: {args.path}")
+    if args.content_file:
+        body = Path(args.content_file).read_text(encoding="utf-8")
+    else:
+        body = sys.stdin.read()
+    name = _marker_name(cfg, args.kind)
+    old = target.read_text(encoding="utf-8") if target.is_file() else ""
+    try:
+        new = replace_block(old, name, args.kind, body)
+    except MarkerError as exc:
+        print(f"error: {target}: {exc}", file=sys.stderr)
+        return 2
+    if new != old:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new, encoding="utf-8")
+    lines = new.count("\n")
+    cap = _cap_for(cfg, target, root)
+    if lines > cap:
+        print(f"warning: {target} is {lines} lines (cap {cap})", file=sys.stderr)
+    return 0
 
 
 def cmd_read_block(args, cfg: dict) -> int:
-    return 0  # implemented in Task 4
+    root: Path = args.root_path
+    target = root / args.path / "CLAUDE.md"
+    if not target.is_file():
+        return 0
+    try:
+        body = read_block_body(target.read_text(encoding="utf-8"),
+                               _marker_name(cfg, args.kind))
+    except MarkerError as exc:
+        print(f"error: {target}: {exc}", file=sys.stderr)
+        return 2
+    if body is not None:
+        print(body)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
