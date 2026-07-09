@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""treemap.py — deterministic engine for the treecode plugin.
+
+Stdlib only (Python 3.11+). Subcommands: scan, check, write-block, read-block.
+Exit codes: 0 OK, 1 drift/cap findings (check), 2 usage/integrity error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+DEFAULTS = {
+    "caps": {"root": 80, "nested": 60, "hard_max": 200},
+    "boundaries": {
+        "min_sources": 3,
+        "max_depth": 4,
+        "package_markers": ["pyproject.toml", "package.json", "go.mod", "Cargo.toml", "pom.xml"],
+        "framework_dirs": ["src/routes", "src/lib", "app/api", "src/app"],
+        "monorepo_globs": ["packages/*", "apps/*", "libs/*"],
+    },
+    "ignore_globs": ["**/node_modules/**", "**/.venv/**", "**/dist/**",
+                     "**/build/**", "**/__pycache__/**"],
+    "markers": {"module": "treecode", "root": "treecode:map"},
+    "generated_language": "en",
+    "hooks": {"cap_guard": "warn", "instructions_loaded_log": False},
+    "stack_aware": True,
+}
+
+
+class UsageError(Exception):
+    """Bad invocation or unreadable config — exit 2."""
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            out[key] = deep_merge(base[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_config(root: Path) -> dict:
+    path = root / "treemap.config.json"
+    if not path.is_file():
+        return deep_merge(DEFAULTS, {})
+    try:
+        user = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UsageError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(user, dict):
+        raise UsageError(f"{path}: top-level value must be an object")
+    return deep_merge(DEFAULTS, user)
+
+
+def cmd_scan(args, cfg: dict) -> int:
+    return 0  # implemented in Task 7
+
+
+def cmd_check(args, cfg: dict) -> int:
+    return 0  # implemented in Task 8
+
+
+def cmd_write_block(args, cfg: dict) -> int:
+    return 0  # implemented in Task 4
+
+
+def cmd_read_block(args, cfg: dict) -> int:
+    return 0  # implemented in Task 4
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="treemap.py", description=__doc__)
+    parser.add_argument("--root", default=".", help="target repo root (default: cwd)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_scan = sub.add_parser("scan", help="discover modules and their status")
+    p_scan.add_argument("--json", action="store_true")
+    p_scan.add_argument("--generic", action="store_true",
+                        help="disable stack-aware detection")
+    p_scan.set_defaults(func=cmd_scan)
+
+    p_check = sub.add_parser("check", help="report drift and cap violations")
+    p_check.add_argument("--json", action="store_true")
+    p_check.add_argument("--cap-only", action="store_true")
+    p_check.add_argument("--path", help="restrict cap check to one file")
+    p_check.set_defaults(func=cmd_check)
+
+    p_write = sub.add_parser("write-block", help="idempotently write a marker block")
+    p_write.add_argument("--path", required=True, help="module dir (or . for root map)")
+    p_write.add_argument("--kind", choices=["module", "root-map"], default="module")
+    p_write.add_argument("--content-file", help="block body file (default: stdin)")
+    p_write.set_defaults(func=cmd_write_block)
+
+    p_read = sub.add_parser("read-block", help="print the current block body")
+    p_read.add_argument("--path", default=".")
+    p_read.add_argument("--kind", choices=["module", "root-map"], default="module")
+    p_read.set_defaults(func=cmd_read_block)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        root = Path(args.root).resolve()
+        if not root.is_dir():
+            raise UsageError(f"--root {args.root}: not a directory")
+        cfg = load_config(root)
+        args.root_path = root
+        return args.func(args, cfg)
+    except UsageError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
