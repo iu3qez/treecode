@@ -362,6 +362,29 @@ _JS_IMPORT_RE = re.compile(
     r"""(?:import\s[^'"]*?from\s*|import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]""")
 _JS_EXTS = {".ts", ".tsx", ".js", ".jsx", ".svelte"}
 
+# quoted #include only — angle-bracket includes are system/third-party headers.
+_C_INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"]+)"', re.M)
+_C_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx", ".hh"}
+
+
+def _resolve_c_include(f: Path, inc: str, file_set: set[str],
+                       basename_index: dict[str, list[str]]) -> str | None:
+    """Best-effort resolution of a quoted #include to a repo-relative path.
+
+    Tries, in order: relative to the including file's directory, relative to the
+    repo root, then a unique-basename match (covers headers reached via an
+    -I include dir we can't see without a build system). Returns None when the
+    target isn't a repo file or the basename is ambiguous.
+    """
+    for base_dir in (f.parent, Path(".")):
+        cand = os.path.normpath((base_dir / inc).as_posix())
+        if cand in file_set:
+            return cand
+    hits = basename_index.get(inc.rsplit("/", 1)[-1])
+    if hits and len(hits) == 1:
+        return hits[0]
+    return None
+
 
 def _owner(rel: str, module_paths: list[str]) -> str | None:
     best = None
@@ -422,10 +445,12 @@ def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
     basename_to_mod: dict[str, str] = {}
     for p in paths:
         basename_to_mod.setdefault(p.split("/")[-1], p)
+    cmake_modules: set[str] = set()
     for m in modules:
         cml = root / m.path / "CMakeLists.txt"
         if not cml.is_file():
             continue
+        cmake_modules.add(m.path)
         try:
             text = cml.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -444,6 +469,17 @@ def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
             for dst in dsts:
                 if dst in path_set and dst != src:
                     edges.add((src, dst))
+
+    # C/C++ fallback: for modules with no CMakeLists.txt (plain Make, no build
+    # system), REQUIRES-style declarations don't exist, so resolve quoted
+    # #include directives to modules. Files under a CMake-covered module are
+    # skipped — its REQUIRES declaration is authoritative there.
+    c_files = [f for f in files if f.suffix in _C_EXTS]
+    file_set = {f.as_posix() for f in files}
+    basename_index: dict[str, list[str]] = {}
+    for f in c_files:
+        basename_index.setdefault(f.name, []).append(f.as_posix())
+
     for f in files:
         src_mod = _owner(f.as_posix(), paths)
         if src_mod is None:
@@ -451,7 +487,12 @@ def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
         targets: list[str] = []
         try:
             text = (root / f).read_text(encoding="utf-8", errors="replace")
-            if f.suffix == ".py":
+            if f.suffix in _C_EXTS and src_mod not in cmake_modules:
+                for inc in _C_INCLUDE_RE.findall(text):
+                    resolved = _resolve_c_include(f, inc, file_set, basename_index)
+                    if resolved is not None:
+                        targets.append(resolved)
+            elif f.suffix == ".py":
                 tree = ast.parse(text)
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Import):

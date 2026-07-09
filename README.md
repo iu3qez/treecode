@@ -120,7 +120,11 @@ Extra tiers cover layouts the base heuristic misses:
 `depends_on` / `used_by` are derived from **static analysis**: Python `ast`, JS/TS
 import regex, and — for CMake / ESP-IDF — the `REQUIRES` / `PRIV_REQUIRES` of
 `idf_component_register()` and the deps of `target_link_libraries()` (the authoritative
-component-dependency declaration, mapped by directory basename). This still cannot see a
+component-dependency declaration, mapped by directory basename). For plain C/C++ modules
+with **no `CMakeLists.txt`** (Makefile or build-system-less projects), it falls back to
+resolving quoted `#include "…"` directives to modules — relative to the including file,
+then the repo root, then a unique-basename match; `<angle-bracket>` includes are treated
+as system/third-party and ignored. This still cannot see a
 dependency that only exists at runtime — a frontend that calls a backend over REST
 imports nothing from it, so no edge is inferred. Declare such edges once and the scan
 merges them into the graph (and thus into every regenerated CLAUDE.md):

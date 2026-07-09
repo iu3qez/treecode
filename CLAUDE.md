@@ -49,6 +49,8 @@ drift/cap findings (`check`), 2 usage/integrity error.
   detected-module block (≥60% via `difflib`), not new↔orphan (a new module has no block
   to compare).
 - Dependency graph is static-analysis only; runtime/REST deps must be declared via
-  `edges` in `treemap.config.json`.
+  `edges` in `treemap.config.json`. C/C++ modules **without** a `CMakeLists.txt` fall
+  back to quoted-`#include` resolution; a module with one uses its `REQUIRES` (the
+  include scan is skipped there, so the two never double-count).
 - Bump `version` in BOTH `plugin.json` and `marketplace.json` together, and update
   `tests/test_manifests.py`.
