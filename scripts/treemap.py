@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -26,10 +27,13 @@ DEFAULTS = {
         "package_markers": ["pyproject.toml", "package.json", "go.mod", "Cargo.toml", "pom.xml"],
         "framework_dirs": ["src/routes", "src/lib", "app/api", "src/app"],
         "monorepo_globs": ["packages/*", "apps/*", "libs/*"],
+        "subdir_exclude": ["tests", "test", "docs", "doc", "examples",
+                           "example", "scripts", "bin"],
     },
     "ignore_globs": ["**/node_modules/**", "**/.venv/**", "**/dist/**",
                      "**/build/**", "**/__pycache__/**"],
     "markers": {"module": "treecode", "root": "treecode:map"},
+    "edges": {},
     "generated_language": "en",
     "hooks": {"cap_guard": "warn", "instructions_loaded_log": False},
     "stack_aware": True,
@@ -223,6 +227,52 @@ def _subtree_sources(files: list[Path]) -> dict[str, int]:
     return counts
 
 
+def _declared_package_dirs(root: Path) -> set[str]:
+    """Best-effort: top-level dirs a root pyproject.toml declares as packages.
+
+    Reads the common setuptools/poetry/hatch keys via stdlib tomllib. Returns
+    only the first path segment of each declared package that exists on disk.
+    """
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return set()
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    tool = data.get("tool", {}) if isinstance(data.get("tool"), dict) else {}
+    names: list[str] = []
+    # poetry: packages = [{ include = "svc" }, ...]
+    for entry in _dig(tool, "poetry", "packages") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("include"), str):
+            names.append(entry["include"])
+    # setuptools: packages = ["myapp", ...]  /  package-dir = {"": "src"}
+    for entry in _dig(tool, "setuptools", "packages") or []:
+        if isinstance(entry, str):
+            names.append(entry)
+    pkg_dir = _dig(tool, "setuptools", "package-dir")
+    if isinstance(pkg_dir, dict):
+        names += [v for v in pkg_dir.values() if isinstance(v, str)]
+    # hatch: [tool.hatch.build.targets.wheel] packages = ["backend"]
+    for entry in _dig(tool, "hatch", "build", "targets", "wheel", "packages") or []:
+        if isinstance(entry, str):
+            names.append(entry)
+    out = set()
+    for name in names:
+        top = name.replace(".", "/").split("/")[0].strip("/")
+        if top and (root / top).is_dir():
+            out.add(top)
+    return out
+
+
+def _dig(data, *keys):
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
 def find_modules(root: Path, files: list[Path], cfg: dict,
                  stack_aware: bool | None = None) -> list[Module]:
     if stack_aware is None:
@@ -230,12 +280,19 @@ def find_modules(root: Path, files: list[Path], cfg: dict,
     bounds = cfg["boundaries"]
     sources = _subtree_sources(files)
     candidates: dict[str, str] = {}
+    has_root_marker = any(
+        f.parent == Path(".") and f.name in bounds["package_markers"]
+        for f in files)
 
     # 1. package markers (highest priority)
     for f in files:
         parent = f.parent.as_posix()
         if f.name in bounds["package_markers"] and parent != ".":
             candidates[parent] = "package"
+
+    # 1b. root manifest declares a package dir in a subdirectory (Tier A)
+    for d in _declared_package_dirs(root):
+        candidates.setdefault(d, "package")
 
     # 2. monorepo globs
     for d in sources:
@@ -253,6 +310,20 @@ def find_modules(root: Path, files: list[Path], cfg: dict,
             is_src_child = len(parts) >= 2 and parts[-2] == "src"
             if is_framework or is_src_child:
                 candidates[d] = "framework-dir"
+
+    # 3b. fallback: a repo with a root package marker but code parked in a
+    # top-level subdir (e.g. backend/) — the de-facto monolithic-app layout.
+    # Promote populated top-level dirs, minus the common non-module ones.
+    if stack_aware and has_root_marker:
+        exclude = set(bounds.get("subdir_exclude", [])) | {"src"}
+        for d in sources:
+            if d in candidates or "/" in d or d in exclude or d.startswith("."):
+                continue
+            if sources.get(d, 0) < bounds["min_sources"]:
+                continue
+            if any(c.startswith(d + "/") for c in candidates):
+                continue                          # contains an already-found module
+            candidates[d] = "framework-dir"
 
     # 4. merge: non-package candidates below min_sources collapse away
     # 5. depth cap
@@ -287,10 +358,22 @@ def _owner(rel: str, module_paths: list[str]) -> str | None:
     return best
 
 
-def build_dep_graph(root: Path, modules: list[Module], files: list[Path]) -> None:
+def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
+                    cfg: dict | None = None) -> None:
     root_abs = root.resolve()
     paths = [m.path for m in modules]
+    path_set = set(paths)
     edges: set[tuple[str, str]] = set()
+
+    # runtime/network deps that static import analysis can't see (e.g. a
+    # frontend calling the backend over REST) — declared once in the config.
+    if cfg:
+        for src, dsts in (cfg.get("edges") or {}).items():
+            if src not in path_set:
+                continue
+            for dst in dsts:
+                if dst in path_set and dst != src:
+                    edges.add((src, dst))
     for f in files:
         src_mod = _owner(f.as_posix(), paths)
         if src_mod is None:
@@ -340,7 +423,7 @@ def parse_root_map(body: str) -> list[dict]:
 def scan_data(root: Path, cfg: dict, stack_aware: bool | None = None) -> dict:
     files = list_files(root, cfg)
     modules = find_modules(root, files, cfg, stack_aware=stack_aware)
-    build_dep_graph(root, modules, files)
+    build_dep_graph(root, modules, files, cfg)
     caps = cfg["caps"]
     mod_marker = cfg["markers"]["module"]
     out_modules = []
