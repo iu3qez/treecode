@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULTS = {
@@ -323,8 +323,76 @@ def build_dep_graph(root: Path, modules: list[Module], files: list[Path]) -> Non
         by_path[dst].used_by.append(src)
 
 
+_MAP_ENTRY_RE = re.compile(r"^\s*-\s*`(?P<path>[^`]+?)/?`.*?→\s*(?P<pointer>\S+CLAUDE\.md)\s*$")
+
+
+def parse_root_map(body: str) -> list[dict]:
+    entries = []
+    for line in body.splitlines():
+        m = _MAP_ENTRY_RE.match(line)
+        if m:
+            entries.append({"path": m.group("path").rstrip("/"),
+                            "pointer": m.group("pointer")})
+    return entries
+
+
+def scan_data(root: Path, cfg: dict, stack_aware: bool | None = None) -> dict:
+    files = list_files(root, cfg)
+    modules = find_modules(root, files, cfg, stack_aware=stack_aware)
+    build_dep_graph(root, modules, files)
+    caps = cfg["caps"]
+    mod_marker = cfg["markers"]["module"]
+    out_modules = []
+    for m in modules:
+        claude = root / m.path / "CLAUDE.md"
+        block_present = has_manual = over_cap = False
+        if claude.is_file():
+            text = claude.read_text(encoding="utf-8")
+            try:
+                body = read_block_body(text, mod_marker)
+                span = find_block(text, mod_marker) if body is not None else None
+            except MarkerError as exc:
+                raise MarkerError(f"{claude}: {exc}") from exc
+            block_present = body is not None
+            outside = text
+            if span is not None:
+                lines = text.splitlines()
+                outside = "\n".join(lines[:span[0]] + lines[span[1] + 1:])
+            has_manual = bool(outside.strip())
+            n = text.count("\n")
+            over_cap = n > caps["nested"] or n > caps["hard_max"]
+        out_modules.append({**asdict(m), "has_manual_content": has_manual,
+                            "block_present": block_present, "over_cap": over_cap})
+    root_claude = root / "CLAUDE.md"
+    root_map = {"present": False, "entries": []}
+    if root_claude.is_file():
+        try:
+            body = read_block_body(root_claude.read_text(encoding="utf-8"),
+                                   cfg["markers"]["root"])
+        except MarkerError as exc:
+            raise MarkerError(f"{root_claude}: {exc}") from exc
+        if body is not None:
+            root_map = {"present": True, "entries": parse_root_map(body)}
+    ignored = sorted({g for g in cfg["ignore_globs"]})
+    return {"root": str(root), "modules": out_modules,
+            "root_map": root_map, "ignored": ignored}
+
+
 def cmd_scan(args, cfg: dict) -> int:
-    return 0  # implemented in Task 7
+    try:
+        data = scan_data(args.root_path, cfg,
+                         stack_aware=False if args.generic else None)
+    except MarkerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        for m in data["modules"]:
+            state = "block" if m["block_present"] else "no block"
+            print(f"{m['path']:<40} {m['kind']:<16} {m['source_count']:>4} src  [{state}]")
+        print(f"{len(data['modules'])} module(s) detected")
+    return 0
 
 
 def cmd_check(args, cfg: dict) -> int:
