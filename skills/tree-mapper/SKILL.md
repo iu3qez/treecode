@@ -44,7 +44,12 @@ you only fill the semantic fields and always write through it.
    Gotchas: <non-obvious behaviors, footguns>
    ```
 
-   Keep it 30–60 lines, descriptive, zero file listings. Write it with:
+   Aim for the **middle of the 30–60 line range** — the caps are maxima, not
+   targets. A 20-line nested file is under-documented: prefer substance
+   (real gotchas, non-obvious conventions, why decisions were made) over
+   brevity. Fill `Depends on:`/`Used by:` from the scan's `depends_on`/`used_by`
+   (which now include any config-declared `edges`), not from guesswork. Zero
+   file listings. Write it with:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/treemap.py" --root <repo> write-block --path <module-dir> --content-file <tmp>`
 4. **Root map.** Build the map body (one line per module:
    `` - `src/api/`  — HTTP handlers  → src/api/CLAUDE.md ``) and write it with
