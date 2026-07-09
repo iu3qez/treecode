@@ -1,6 +1,9 @@
 {
   "name": "iu3qez-tools",
   "owner": { "name": "iu3qez", "url": "https://github.com/iu3qez" },
+  "metadata": {
+    "description": "Developer tooling for Claude Code by iu3qez, starting with treecode for distributed CLAUDE.md trees."
+  },
   "plugins": [
     {
       "name": "treecode",
