@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import fnmatch
 import json
 import os
@@ -395,8 +396,117 @@ def cmd_scan(args, cfg: dict) -> int:
     return 0
 
 
+def _cap_violations(root: Path, cfg: dict, only: str | None = None) -> list[dict]:
+    caps = cfg["caps"]
+    out = []
+    if only:
+        p = Path(only)
+        targets = [p if p.is_absolute() else root / p]
+    else:
+        targets = [root / f for f in list_files(root, cfg) if f.name == "CLAUDE.md"]
+        root_claude = root / "CLAUDE.md"
+        if root_claude.is_file() and root_claude not in targets:
+            targets.append(root_claude)
+    for t in targets:
+        if not t.is_file():
+            continue
+        n = t.read_text(encoding="utf-8").count("\n")
+        cap = caps["root"] if t.parent == root else caps["nested"]
+        cap = min(cap, caps["hard_max"])
+        if n > cap:
+            rel = t.relative_to(root).as_posix() if t.is_relative_to(root) else str(t)
+            out.append({"path": rel, "detail": f"{n} lines (cap {cap})",
+                        "suggested_action": "shorten the file or raise caps in treemap.config.json"})
+    return out
+
+
+def compute_drift(root: Path, cfg: dict, cap_only: bool = False,
+                  only_path: str | None = None) -> dict:
+    empty = {"new": [], "renamed": [], "removed": [], "dead_pointers": [],
+             "orphan_nested": [], "cap_violations": []}
+    if cap_only:
+        empty["cap_violations"] = _cap_violations(root, cfg, only=only_path)
+        return {"drift": empty}
+    data = scan_data(root, cfg)
+    detected = {m["path"] for m in data["modules"]}
+    mod_marker = cfg["markers"]["module"]
+
+    with_block: dict[str, str] = {}          # dir -> block body
+    for f in list_files(root, cfg):
+        if f.name != "CLAUDE.md" or f.parent == Path("."):
+            continue
+        body = read_block_body((root / f).read_text(encoding="utf-8"), mod_marker)
+        if body is not None:
+            with_block[f.parent.as_posix()] = body
+
+    new = sorted(detected - set(with_block))
+    orphans = sorted(set(with_block) - detected)
+    detected_with_block = {d: with_block[d] for d in detected if d in with_block}
+
+    # rename: pair an orphan block with the detected module whose block content
+    # is the closest match (>= 60%). Paired orphans leave the orphan bucket.
+    renamed = []
+    for old in list(orphans):
+        best, best_ratio = None, 0.0
+        for cand, cbody in detected_with_block.items():
+            ratio = difflib.SequenceMatcher(None, with_block[old], cbody).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = cand, ratio
+        if best and best_ratio >= 0.6:
+            renamed.append({"path": old, "from": old, "to": best,
+                            "detail": f"content match {best_ratio:.0%}",
+                            "suggested_action": f"move {old}/CLAUDE.md content into {best}/CLAUDE.md and remove {old}/CLAUDE.md"})
+            orphans.remove(old)
+
+    rename_targets = {r["to"] for r in renamed}
+    dead, removed = [], []
+    for entry in data["root_map"]["entries"]:
+        if not (root / entry["pointer"]).is_file():
+            dead.append({"path": entry["path"],
+                         "detail": f"map points to missing {entry['pointer']}",
+                         "suggested_action": "remove the entry or regenerate the map"})
+        if entry["path"] not in detected and entry["path"] not in rename_targets:
+            removed.append({"path": entry["path"],
+                            "detail": "mapped module no longer detected",
+                            "suggested_action": "regenerate the root map"})
+
+    drift = {
+        "new": [{"path": p, "detail": "module without nested CLAUDE.md block",
+                 "suggested_action": "run /treecode:map-tree"} for p in new],
+        "renamed": renamed,
+        "removed": removed,
+        "dead_pointers": dead,
+        "orphan_nested": [{"path": p, "detail": "nested block but no module detected",
+                           "suggested_action": f"review and remove {p}/CLAUDE.md manually"}
+                          for p in orphans],
+        "cap_violations": _cap_violations(root, cfg),
+    }
+    return {"drift": drift}
+
+
 def cmd_check(args, cfg: dict) -> int:
-    return 0  # implemented in Task 8
+    try:
+        result = compute_drift(args.root_path, cfg, cap_only=args.cap_only,
+                               only_path=args.path)
+    except MarkerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    drift = result["drift"]
+    has_drift = any(drift.values())
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"{'type':<14} {'path':<32} {'detail':<40} suggested-action")
+        labels = {"new": "new", "renamed": "renamed", "removed": "removed",
+                  "dead_pointers": "dead-pointer", "orphan_nested": "orphan",
+                  "cap_violations": "cap"}
+        for bucket, rows in drift.items():
+            for row in rows:
+                print(f"{labels[bucket]:<14} {row['path']:<32} {row['detail']:<40} "
+                      f"{row['suggested_action']}")
+        if not has_drift:
+            print("(no drift)")
+    return 1 if has_drift else 0
 
 
 def _marker_name(cfg: dict, kind: str) -> str:
