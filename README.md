@@ -117,11 +117,13 @@ Extra tiers cover layouts the base heuristic misses:
 
 ### Dependency graph and its limits
 
-`depends_on` / `used_by` are derived by **static import analysis** (Python `ast`, JS/TS
-import regex). This cannot see a dependency that only exists at runtime — a frontend
-that calls a backend over REST imports nothing from it, so no edge is inferred. Declare
-such edges once and the scan merges them into the graph (and thus into every
-regenerated CLAUDE.md):
+`depends_on` / `used_by` are derived from **static analysis**: Python `ast`, JS/TS
+import regex, and — for CMake / ESP-IDF — the `REQUIRES` / `PRIV_REQUIRES` of
+`idf_component_register()` and the deps of `target_link_libraries()` (the authoritative
+component-dependency declaration, mapped by directory basename). This still cannot see a
+dependency that only exists at runtime — a frontend that calls a backend over REST
+imports nothing from it, so no edge is inferred. Declare such edges once and the scan
+merges them into the graph (and thus into every regenerated CLAUDE.md):
 
 ```json
 { "edges": { "frontend": ["backend"] } }

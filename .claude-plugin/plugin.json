@@ -1,6 +1,6 @@
 {
   "name": "treecode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Distributed, lazy-loaded CLAUDE.md tree: lean root map + per-module nested files, idempotent marker blocks, drift detection, cap enforcement.",
   "author": {
     "name": "iu3qez"
