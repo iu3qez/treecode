@@ -7,7 +7,10 @@ Exit codes: 0 OK, 1 drift/cap findings (check), 2 usage/integrity error.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -111,6 +114,82 @@ def replace_block(text: str, name: str, kind: str, body: str) -> str:
     else:
         new = lines[:span[0]] + block + lines[span[1] + 1:]
     return "\n".join(new) + "\n"
+
+
+def match_any(rel: str, patterns: list[str]) -> bool:
+    for pat in patterns:
+        candidates = {pat}
+        if pat.startswith("**/"):
+            candidates.add(pat[3:])            # also match at repo top level
+        if pat.endswith("/"):
+            candidates = {c + "**" for c in candidates} | {c + "*" for c in candidates}
+        if any(fnmatch.fnmatch(rel, c) for c in candidates):
+            return True
+    return False
+
+
+def _read_pattern_file(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def _git_files(root: Path) -> list[Path] | None:
+    if not (root / ".git").exists():
+        return None
+    try:
+        res = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    return [Path(line) for line in res.stdout.splitlines() if line]
+
+
+def _walk_files(root: Path, gitignore: list[str]) -> list[Path]:
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = Path(dirpath).relative_to(root)
+        dirnames[:] = [
+            d for d in dirnames
+            if d != ".git"
+            and not match_any((rel_dir / d).as_posix(), gitignore)
+            and not match_any((rel_dir / d).as_posix() + "/", gitignore)
+        ]
+        for fname in filenames:
+            rel = (rel_dir / fname).as_posix().removeprefix("./")
+            if not match_any(rel, gitignore):
+                out.append(Path(rel))
+    return out
+
+
+def list_files(root: Path, cfg: dict) -> list[Path]:
+    files = _git_files(root)
+    if files is None:
+        files = _walk_files(root, _read_pattern_file(root / ".gitignore"))
+    claudeignore = _read_pattern_file(root / ".claudeignore")
+    extra = list(cfg["ignore_globs"]) + claudeignore
+    kept = []
+    for rel in files:
+        if match_any(rel.as_posix(), extra):
+            continue
+        abs_path = root / rel
+        try:
+            if not abs_path.resolve().is_relative_to(root):
+                continue                       # symlink escaping the repo
+        except OSError:
+            continue
+        if abs_path.is_file():
+            kept.append(rel)
+    return sorted(kept)
 
 
 def cmd_scan(args, cfg: dict) -> int:
