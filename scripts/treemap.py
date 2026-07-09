@@ -25,8 +25,9 @@ DEFAULTS = {
         "min_sources": 3,
         "max_depth": 4,
         "package_markers": ["pyproject.toml", "package.json", "go.mod", "Cargo.toml", "pom.xml"],
+        "build_markers": ["CMakeLists.txt", "meson.build"],
         "framework_dirs": ["src/routes", "src/lib", "app/api", "src/app"],
-        "monorepo_globs": ["packages/*", "apps/*", "libs/*"],
+        "monorepo_globs": ["packages/*", "apps/*", "libs/*", "components/*"],
         "subdir_exclude": ["tests", "test", "docs", "doc", "examples",
                            "example", "scripts", "bin"],
     },
@@ -283,12 +284,23 @@ def find_modules(root: Path, files: list[Path], cfg: dict,
     has_root_marker = any(
         f.parent == Path(".") and f.name in bounds["package_markers"]
         for f in files)
+    build_markers = bounds.get("build_markers", [])
+    exclude = set(bounds.get("subdir_exclude", []))
+    # build markers (CMakeLists.txt, meson.build) only count when the same file
+    # sits at the repo root — the signal that this is a build-system-rooted
+    # project (e.g. CMake/ESP-IDF), where each per-dir build file is a component.
+    root_builds = {f.name for f in files
+                   if f.parent == Path(".") and f.name in build_markers}
 
     # 1. package markers (highest priority)
     for f in files:
         parent = f.parent.as_posix()
-        if f.name in bounds["package_markers"] and parent != ".":
+        if parent == ".":
+            continue
+        if f.name in bounds["package_markers"]:
             candidates[parent] = "package"
+        elif f.name in root_builds and not (set(parent.split("/")) & exclude):
+            candidates.setdefault(parent, "package")
 
     # 1b. root manifest declares a package dir in a subdirectory (Tier A)
     for d in _declared_package_dirs(root):
@@ -307,7 +319,9 @@ def find_modules(root: Path, files: list[Path], cfg: dict,
             parts = d.split("/")
             is_framework = match_any(d, bounds["framework_dirs"]) or \
                 d in bounds["framework_dirs"]
-            is_src_child = len(parts) >= 2 and parts[-2] == "src"
+            # only *top-level* src children are modules; a deep <pkg>/src/<x> is
+            # an internal source folder, not a module boundary.
+            is_src_child = len(parts) == 2 and parts[0] == "src"
             if is_framework or is_src_child:
                 candidates[d] = "framework-dir"
 
