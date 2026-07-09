@@ -372,12 +372,68 @@ def _owner(rel: str, module_paths: list[str]) -> str | None:
     return best
 
 
+_IDF_REGISTER_KEYWORDS = frozenset({
+    "SRCS", "SRC_DIRS", "INCLUDE_DIRS", "PRIV_INCLUDE_DIRS", "REQUIRES",
+    "PRIV_REQUIRES", "REQUIRED_IDF_TARGETS", "EMBED_FILES", "EMBED_TXTFILES",
+    "LDFRAGMENTS", "KCONFIG", "KCONFIG_PROJBUILD", "WHOLE_ARCHIVE", "EXCLUDE_SRCS",
+})
+_IDF_REGISTER_RE = re.compile(r"idf_component_register\s*\(([^)]*)\)", re.S | re.I)
+_TLL_RE = re.compile(r"target_link_libraries\s*\(([^)]*)\)", re.S | re.I)
+
+
+def _cmake_component_deps(text: str) -> list[str]:
+    """Component names an ESP-IDF/CMake file declares as dependencies.
+
+    Reads REQUIRES / PRIV_REQUIRES from idf_component_register() and the deps of
+    target_link_libraries() — the authoritative dependency declaration, unlike
+    C #include scanning.
+    """
+    out: list[str] = []
+    for m in _IDF_REGISTER_RE.finditer(text):
+        collecting = False
+        for tok in m.group(1).split():
+            if tok in ("REQUIRES", "PRIV_REQUIRES"):
+                collecting = True
+                continue
+            if tok in _IDF_REGISTER_KEYWORDS:
+                collecting = False
+                continue
+            name = tok.strip('"').strip("'")
+            if collecting and name:
+                out.append(name)
+    for m in _TLL_RE.finditer(text):
+        tokens = m.group(1).split()
+        for tok in tokens[1:]:                     # skip the target name
+            name = tok.strip('"').strip("'")
+            if name and name not in ("PUBLIC", "PRIVATE", "INTERFACE"):
+                out.append(name)
+    return out
+
+
 def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
                     cfg: dict | None = None) -> None:
     root_abs = root.resolve()
     paths = [m.path for m in modules]
     path_set = set(paths)
     edges: set[tuple[str, str]] = set()
+
+    # CMake/ESP-IDF: component dependencies from REQUIRES / target_link_libraries,
+    # mapped by directory basename (how ESP-IDF names components).
+    basename_to_mod: dict[str, str] = {}
+    for p in paths:
+        basename_to_mod.setdefault(p.split("/")[-1], p)
+    for m in modules:
+        cml = root / m.path / "CMakeLists.txt"
+        if not cml.is_file():
+            continue
+        try:
+            text = cml.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for name in _cmake_component_deps(text):
+            dst = basename_to_mod.get(name)
+            if dst and dst != m.path:
+                edges.add((m.path, dst))
 
     # runtime/network deps that static import analysis can't see (e.g. a
     # frontend calling the backend over REST) — declared once in the config.
@@ -507,13 +563,33 @@ def _cap_violations(root: Path, cfg: dict, only: str | None = None) -> list[dict
     for t in targets:
         if not t.is_file():
             continue
-        n = t.read_text(encoding="utf-8").count("\n")
-        cap = caps["root"] if t.parent == root else caps["nested"]
-        cap = min(cap, caps["hard_max"])
-        if n > cap:
-            rel = t.relative_to(root).as_posix() if t.is_relative_to(root) else str(t)
-            out.append({"path": rel, "detail": f"{n} lines (cap {cap})",
-                        "suggested_action": "shorten the file or raise caps in treemap.config.json"})
+        text = t.read_text(encoding="utf-8")
+        n = len(text.splitlines())
+        is_root = t.parent == root
+        cap = min(caps["root"] if is_root else caps["nested"], caps["hard_max"])
+        if n <= cap:
+            continue
+        # split total into treecode-owned block lines vs human-authored lines so
+        # the message is honest: a fat root is usually the user's own content,
+        # which treecode neither owns nor can shorten.
+        marker = cfg["markers"]["root"] if is_root else cfg["markers"]["module"]
+        try:
+            span = find_block(text, marker)
+        except MarkerError:
+            span = None
+        generated = (span[1] - span[0] + 1) if span else 0
+        human = n - generated
+        rel = t.relative_to(root).as_posix() if t.is_relative_to(root) else str(t)
+        if human > generated:
+            action = ("most of this is human-authored — distribute it into nested "
+                      "module files, or raise caps in treemap.config.json")
+        else:
+            action = "shorten the generated block, or raise caps in treemap.config.json"
+        out.append({
+            "path": rel,
+            "detail": f"{n} lines (cap {cap}); {generated} generated, {human} human-authored",
+            "suggested_action": action,
+        })
     return out
 
 
