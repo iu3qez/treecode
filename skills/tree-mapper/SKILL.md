@@ -15,7 +15,9 @@ you only fill the semantic fields and always write through it.
 - Never write `@path` imports to wire the tree — imports load at launch and defeat
   lazy loading. Nested files in subdirectories are the only mechanism.
 - Never edit CLAUDE.md files directly; always go through `treemap.py write-block`.
-  Text outside marker blocks is human-owned.
+  Text outside marker blocks is human-owned. The one sanctioned exception is the
+  **distill** step (step 4), which relocates the user's *own* prose between files —
+  only with their confirmation, and never touching a marker block.
 - Never commit. Report the modified files and suggest a commit.
 - Root map = where things are + pointers. No file listings anywhere.
 
@@ -58,18 +60,40 @@ you only fill the semantic fields and always write through it.
    (which now include any config-declared `edges`), not from guesswork. Zero
    file listings. Write it with:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/treemap.py" --root <repo> write-block --path <module-dir> --content-file <tmp>`
-4. **Root map.** Build the map body (one line per module:
+4. **Distill a bloated root (only if needed).** Detect it with
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/treemap.py" --root <repo> check --cap-only --path CLAUDE.md --json`.
+   If the root CLAUDE.md is over cap **and** its human-authored lines outnumber the
+   generated block (the finding's action reads "most of this is human-authored —
+   distribute it into nested module files"), the root is carrying module-specific
+   prose that belongs down in the tree. This is the *one* step that touches
+   human-owned text, so it is explicit and confirmed:
+   a. Read the root CLAUDE.md. Consider only the text **outside** the `treecode:map`
+      marker block — that block is the generated map and is never moved.
+   b. Segment that prose into chunks and classify each: **global** (build/test
+      commands, repo-wide conventions, cross-cutting invariants → stays at root) vs
+      **module-specific** (one module's internals, gotchas, or usage rules → belongs
+      in that module's nested CLAUDE.md). When a chunk is ambiguous, leave it at root.
+   c. Present the proposed move — which chunk lands in which nested file, what stays —
+      and get the user's confirmation before touching anything.
+   d. On confirmation, for each module-specific chunk: append it **verbatim** into that
+      module's CLAUDE.md human region (outside the marker block), and remove it from the
+      root. Edit these files directly — it is human-owned prose on both ends, not a
+      generated block, so it does not go through `write-block` and must not disturb any
+      marker block. Never paraphrase or invent; move the user's words as-is.
+   e. Re-run the cap check. The root should now be under cap; if a moved chunk pushes a
+      nested file over its cap, flag it for the user to trim — never silently truncate.
+5. **Root map.** Build the map body (one line per module:
    `` - `src/api/`  — HTTP handlers  → src/api/CLAUDE.md ``) and write it with
    `write-block --path . --kind root-map`.
-5. **Rules (only with `--with-rules`).** For modules that have recurring usage
+6. **Rules (only with `--with-rules`).** For modules that have recurring usage
    constraints, generate a path-scoped rule — *how* to touch the module, not *what*
    it is (that's the nested CLAUDE.md). Keep it to concrete do/don't directives.
    Write it with:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/treemap.py" --root <repo> write-block --path <module-dir> --kind rule --content-file <tmp>`
    → lands in `.claude/rules/<module-slug>.md`, marker-delimited and idempotent.
-6. **Verify.** Run `treemap.py --root <repo> check`. Report: files written, caps OK,
+7. **Verify.** Run `treemap.py --root <repo> check`. Report: files written, caps OK,
    residual drift.
-7. **Hand off.** Never commit. Print the modified-file set and suggest a commit
+8. **Hand off.** Never commit. Print the modified-file set and suggest a commit
    message.
 
 ## Error handling

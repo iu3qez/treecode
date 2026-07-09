@@ -12,7 +12,7 @@
       "name": "treecode",
       "source": "./",
       "description": "Build and maintain a distributed CLAUDE.md tree for Claude Code: lean root map plus lazy per-module nested files, idempotent, with drift detection and cap enforcement.",
-      "version": "0.2.1"
+      "version": "0.2.2"
     }
   ]
 }
