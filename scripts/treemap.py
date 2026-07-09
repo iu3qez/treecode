@@ -7,11 +7,14 @@ Exit codes: 0 OK, 1 drift/cap findings (check), 2 usage/integrity error.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULTS = {
@@ -190,6 +193,134 @@ def list_files(root: Path, cfg: dict) -> list[Path]:
         if abs_path.is_file():
             kept.append(rel)
     return sorted(kept)
+
+
+SOURCE_EXTS = frozenset({
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".svelte", ".go", ".rs", ".java",
+    ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".kt", ".swift",
+})
+
+
+@dataclass
+class Module:
+    path: str
+    kind: str
+    source_count: int = 0
+    depends_on: list[str] = field(default_factory=list)
+    used_by: list[str] = field(default_factory=list)
+
+
+def _subtree_sources(files: list[Path]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for f in files:
+        if f.suffix not in SOURCE_EXTS:
+            continue
+        for parent in f.parents:
+            if parent == Path("."):
+                break
+            counts[parent.as_posix()] = counts.get(parent.as_posix(), 0) + 1
+    return counts
+
+
+def find_modules(root: Path, files: list[Path], cfg: dict,
+                 stack_aware: bool | None = None) -> list[Module]:
+    if stack_aware is None:
+        stack_aware = cfg["stack_aware"]
+    bounds = cfg["boundaries"]
+    sources = _subtree_sources(files)
+    candidates: dict[str, str] = {}
+
+    # 1. package markers (highest priority)
+    for f in files:
+        parent = f.parent.as_posix()
+        if f.name in bounds["package_markers"] and parent != ".":
+            candidates[parent] = "package"
+
+    # 2. monorepo globs
+    for d in sources:
+        if d not in candidates and match_any(d, bounds["monorepo_globs"]):
+            candidates[d] = "monorepo-member"
+
+    # 3. framework dirs + populated children of any src/ dir
+    if stack_aware:
+        for d in sources:
+            if d in candidates:
+                continue
+            parts = d.split("/")
+            is_framework = match_any(d, bounds["framework_dirs"]) or \
+                d in bounds["framework_dirs"]
+            is_src_child = len(parts) >= 2 and parts[-2] == "src"
+            if is_framework or is_src_child:
+                candidates[d] = "framework-dir"
+
+    # 4. merge: non-package candidates below min_sources collapse away
+    # 5. depth cap
+    # 6. absorption into ancestor candidates (packages resist absorption)
+    selected: dict[str, str] = {}
+    for d, kind in sorted(candidates.items()):
+        if kind != "package" and sources.get(d, 0) < bounds["min_sources"]:
+            continue
+        if len(d.split("/")) > bounds["max_depth"]:
+            continue
+        ancestor = next((a for a in selected
+                         if d != a and d.startswith(a + "/")), None)
+        if ancestor is not None and kind != "package":
+            continue
+        selected[d] = kind
+
+    return [Module(path=d, kind=kind, source_count=sources.get(d, 0))
+            for d, kind in sorted(selected.items())]
+
+
+_JS_IMPORT_RE = re.compile(
+    r"""(?:import\s[^'"]*?from\s*|import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]""")
+_JS_EXTS = {".ts", ".tsx", ".js", ".jsx", ".svelte"}
+
+
+def _owner(rel: str, module_paths: list[str]) -> str | None:
+    best = None
+    for m in module_paths:
+        if rel == m or rel.startswith(m + "/"):
+            if best is None or len(m) > len(best):
+                best = m
+    return best
+
+
+def build_dep_graph(root: Path, modules: list[Module], files: list[Path]) -> None:
+    root_abs = root.resolve()
+    paths = [m.path for m in modules]
+    edges: set[tuple[str, str]] = set()
+    for f in files:
+        src_mod = _owner(f.as_posix(), paths)
+        if src_mod is None:
+            continue
+        targets: list[str] = []
+        try:
+            text = (root / f).read_text(encoding="utf-8", errors="replace")
+            if f.suffix == ".py":
+                tree = ast.parse(text)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        targets += [a.name.replace(".", "/") for a in node.names]
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        targets.append(node.module.replace(".", "/"))
+            elif f.suffix in _JS_EXTS:
+                for spec in _JS_IMPORT_RE.findall(text):
+                    if not spec.startswith("."):
+                        continue
+                    resolved = (root / f.parent / spec).resolve()
+                    if resolved.is_relative_to(root_abs):
+                        targets.append(resolved.relative_to(root_abs).as_posix())
+        except (SyntaxError, ValueError, OSError):
+            continue                              # best-effort: skip file
+        for rel_t in targets:
+            dst_mod = _owner(rel_t, paths)
+            if dst_mod and dst_mod != src_mod:
+                edges.add((src_mod, dst_mod))
+    by_path = {m.path: m for m in modules}
+    for src, dst in sorted(edges):
+        by_path[src].depends_on.append(dst)
+        by_path[dst].used_by.append(src)
 
 
 def cmd_scan(args, cfg: dict) -> int:

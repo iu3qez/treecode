@@ -10,6 +10,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "treemap.py"
 def load_treemap():
     spec = importlib.util.spec_from_file_location("treemap", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["treemap"] = mod          # dataclass needs the module registered
     spec.loader.exec_module(mod)
     return mod
 
