@@ -29,6 +29,13 @@ you only fill the semantic fields and always write through it.
    be touched, present the plan and ask for confirmation first. With `--dry-run`,
    stop here. Without `--force`, skip modules whose block is present and whose
    sources are unchanged since the block content still describes them.
+   **Many modules?** When the plan covers several independent modules, dispatch
+   one `treecode:module-cartographer` subagent per module *in parallel* (send the
+   dispatches in a single message). Each returns the compiled template for its
+   module without loading its sources into this session's context. Then you write
+   each returned block via `write-block`. For one or two modules, just do step 3
+   inline — the fork overhead isn't worth it.
+
 3. **Per module:** read the key sources (entrypoints, largest files, exports), then
    fill this template — semantic fields only, in the config's `generated_language`:
 
@@ -54,9 +61,15 @@ you only fill the semantic fields and always write through it.
 4. **Root map.** Build the map body (one line per module:
    `` - `src/api/`  — HTTP handlers  → src/api/CLAUDE.md ``) and write it with
    `write-block --path . --kind root-map`.
-5. **Verify.** Run `treemap.py --root <repo> check`. Report: files written, caps OK,
+5. **Rules (only with `--with-rules`).** For modules that have recurring usage
+   constraints, generate a path-scoped rule — *how* to touch the module, not *what*
+   it is (that's the nested CLAUDE.md). Keep it to concrete do/don't directives.
+   Write it with:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/treemap.py" --root <repo> write-block --path <module-dir> --kind rule --content-file <tmp>`
+   → lands in `.claude/rules/<module-slug>.md`, marker-delimited and idempotent.
+6. **Verify.** Run `treemap.py --root <repo> check`. Report: files written, caps OK,
    residual drift.
-6. **Hand off.** Never commit. Print the modified-file set and suggest a commit
+7. **Hand off.** Never commit. Print the modified-file set and suggest a commit
    message.
 
 ## Error handling

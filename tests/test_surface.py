@@ -40,6 +40,21 @@ class TestSurface(unittest.TestCase):
                        "map-tree", "map-drift", "marker", "lazy"):
             self.assertIn(needle, text)
 
+    def test_cartographer_agent(self):
+        fm = frontmatter(ROOT / "agents/module-cartographer.md")
+        self.assertEqual(fm["name"], "module-cartographer")
+        self.assertIn("description", fm)
+        body = (ROOT / "agents/module-cartographer.md").read_text()
+        self.assertIn("one", body.lower())          # single-module scope
+        self.assertIn("do not write files", body.lower())
+
+    def test_skill_and_command_cover_rules(self):
+        skill = (ROOT / "skills/tree-mapper/SKILL.md").read_text()
+        self.assertIn("--kind rule", skill)
+        self.assertIn("module-cartographer", skill)
+        cmd = (ROOT / "commands/map-tree.md").read_text()
+        self.assertIn("--with-rules", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
