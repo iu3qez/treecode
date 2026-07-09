@@ -9,7 +9,7 @@ class TestManifests(unittest.TestCase):
     def test_plugin_json(self):
         data = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         self.assertEqual(data["name"], "treecode")
-        self.assertEqual(data["version"], "0.1.0")
+        self.assertEqual(data["version"], "0.2.0")
         for key in ("description", "author", "license"):
             self.assertIn(key, data)
 
@@ -19,7 +19,7 @@ class TestManifests(unittest.TestCase):
         entry = data["plugins"][0]
         self.assertEqual(entry["name"], "treecode")
         self.assertEqual(entry["source"], "./")
-        self.assertEqual(entry["version"], "0.1.0")
+        self.assertEqual(entry["version"], "0.2.0")
 
 
 if __name__ == "__main__":

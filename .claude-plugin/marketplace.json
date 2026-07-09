@@ -1,6 +1,9 @@
 {
   "name": "iu3qez-tools",
-  "owner": { "name": "iu3qez", "url": "https://github.com/iu3qez" },
+  "owner": {
+    "name": "iu3qez",
+    "url": "https://github.com/iu3qez"
+  },
   "metadata": {
     "description": "Developer tooling for Claude Code by iu3qez, starting with treecode for distributed CLAUDE.md trees."
   },
@@ -9,7 +12,7 @@
       "name": "treecode",
       "source": "./",
       "description": "Build and maintain a distributed CLAUDE.md tree for Claude Code: lean root map plus lazy per-module nested files, idempotent, with drift detection and cap enforcement.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }
