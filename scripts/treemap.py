@@ -33,6 +33,7 @@ DEFAULTS = {
     "ignore_globs": ["**/node_modules/**", "**/.venv/**", "**/dist/**",
                      "**/build/**", "**/__pycache__/**"],
     "markers": {"module": "treecode", "root": "treecode:map"},
+    "edges": {},
     "generated_language": "en",
     "hooks": {"cap_guard": "warn", "instructions_loaded_log": False},
     "stack_aware": True,
@@ -357,10 +358,22 @@ def _owner(rel: str, module_paths: list[str]) -> str | None:
     return best
 
 
-def build_dep_graph(root: Path, modules: list[Module], files: list[Path]) -> None:
+def build_dep_graph(root: Path, modules: list[Module], files: list[Path],
+                    cfg: dict | None = None) -> None:
     root_abs = root.resolve()
     paths = [m.path for m in modules]
+    path_set = set(paths)
     edges: set[tuple[str, str]] = set()
+
+    # runtime/network deps that static import analysis can't see (e.g. a
+    # frontend calling the backend over REST) — declared once in the config.
+    if cfg:
+        for src, dsts in (cfg.get("edges") or {}).items():
+            if src not in path_set:
+                continue
+            for dst in dsts:
+                if dst in path_set and dst != src:
+                    edges.add((src, dst))
     for f in files:
         src_mod = _owner(f.as_posix(), paths)
         if src_mod is None:
@@ -410,7 +423,7 @@ def parse_root_map(body: str) -> list[dict]:
 def scan_data(root: Path, cfg: dict, stack_aware: bool | None = None) -> dict:
     files = list_files(root, cfg)
     modules = find_modules(root, files, cfg, stack_aware=stack_aware)
-    build_dep_graph(root, modules, files)
+    build_dep_graph(root, modules, files, cfg)
     caps = cfg["caps"]
     mod_marker = cfg["markers"]["module"]
     out_modules = []
